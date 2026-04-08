@@ -23,6 +23,9 @@ class Ok(Generic[T]):
     def unwrap_or(self, default: T) -> T:
         return self.value
 
+    def unwrap_err(self) -> NoReturn:
+        raise ValueError(f"Called unwrap_err on an Ok: {self.value}")
+
 
 @dataclass(frozen=True)
 class Err(Generic[E]):
@@ -40,6 +43,9 @@ class Err(Generic[E]):
 
     def unwrap_or(self, default: O) -> O:
         return default
+
+    def unwrap_err(self) -> E:
+        return self.error
 
 
 # The Result Type is a Union of Ok and Err
