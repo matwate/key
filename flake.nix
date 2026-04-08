@@ -59,7 +59,7 @@
       };
 
       setup = pkgs.writeShellScriptBin "key-setup" ''
-        export PATH="${pkgs.lib.makeBinPath ([ python pkgs.uv ] ++ runtimeLibs)}"
+        export PATH="${pkgs.lib.makeBinPath ([ pkgs.coreutils python pkgs.uv ] ++ runtimeLibs)}"
         DATA_DIR="''${1:-/var/lib/key-api}"
         echo "--- Key API Setup ---"
         mkdir -p "$DATA_DIR"
@@ -88,8 +88,8 @@
         cp ${self}/src/testassets/database/foodkeeper.json "$WORK/src/testassets/database/"
         export PYTHONPATH="$WORK"
         export LD_LIBRARY_PATH="${ldPath}"
-        python unify_food_database.py
-        python build_spanish_foodkeeper.py
+        uv run python unify_food_database.py
+        uv run python build_spanish_foodkeeper.py
         cp -r "$WORK/chroma_db" "$DATA_DIR/"
 
         if [ ! -f "$DATA_DIR/.env" ]; then
@@ -105,10 +105,9 @@
         echo "  2. cp ${key-api}/lib/systemd/system/key-api.service /etc/systemd/system/"
         echo "  3. systemctl daemon-reload && systemctl enable --now key-api"
       '';
-      };
 
       build-db = pkgs.writeShellScriptBin "build-db" ''
-        export PATH="${pkgs.lib.makeBinPath ([ python ] ++ runtimeLibs)}"
+        export PATH="${pkgs.lib.makeBinPath ([ pkgs.coreutils python ] ++ runtimeLibs)}"
         DATA_DIR="''${1:-/var/lib/key-api}"
         if [ ! -d "$DATA_DIR/.venv" ]; then
           echo "No venv at $DATA_DIR/.venv — run key-setup first"
@@ -129,15 +128,14 @@
         source "$DATA_DIR/.venv/bin/activate"
         export PYTHONPATH="$WORK"
         export LD_LIBRARY_PATH="${ldPath}"
-        python unify_food_database.py
-        python build_spanish_foodkeeper.py
+        uv run python unify_food_database.py
+        uv run python build_spanish_foodkeeper.py
 
         rm -rf "$DATA_DIR/chroma_db"
         cp -r "$WORK/chroma_db" "$DATA_DIR/"
         echo "Done: $DATA_DIR/chroma_db/"
       '';
-      };
-
+ 
     in {
       packages.${system}.default = key-api;
 
