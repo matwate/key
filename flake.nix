@@ -60,37 +60,30 @@
 
       setup = pkgs.writeShellScriptBin "key-setup" ''
         export PATH="${pkgs.lib.makeBinPath ([ pkgs.coreutils python pkgs.uv ] ++ runtimeLibs)}"
-        DATA_DIR="''${1:-/var/lib/key-api}"
+        export LD_LIBRARY_PATH="${ldPath}"
+        DATA_DIR="''${1:-./data}"
         echo "--- Key API Setup ---"
-        mkdir -p "$DATA_DIR"
+        mkdir -p "$DATA_DIR/src/testassets/database"
 
-        if [ ! -d "$DATA_DIR/.venv" ]; then
-          echo "[1/4] Creating venv..."
-          uv venv --python ${python}/bin/python "$DATA_DIR/.venv"
-        else
-          echo "[1/4] venv exists, skipping"
+        echo "[1/4] Copying source files..."
+        cp ${self}/pyproject.toml ${self}/uv.lock "$DATA_DIR/"
+        cp -r ${self}/src "$DATA_DIR/"
+        cp ${self}/products.csv ${self}/food_storage.csv "$DATA_DIR/"
+        cp ${self}/unify_food_database.py ${self}/build_spanish_foodkeeper.py "$DATA_DIR/"
+        cp ${self}/src/testassets/database/foodkeeper-spanish.json "$DATA_DIR/src/testassets/database/"
+        cp ${self}/src/testassets/database/foodkeeper.json "$DATA_DIR/src/testassets/database/"
+
+        echo "[2/4] Creating venv + installing dependencies..."
+        cd "$DATA_DIR"
+        if [ ! -d ".venv" ]; then
+          uv venv --python ${python}/bin/python
         fi
-
-        echo "[2/4] Installing dependencies..."
-        WORK=$(mktemp -d)
-        trap 'rm -rf "$WORK"' EXIT
-        cp ${self}/pyproject.toml ${self}/uv.lock "$WORK/"
-        cp -r ${self}/src "$WORK/"
-        cd "$WORK"
-        source "$DATA_DIR/.venv/bin/activate"
         uv sync --frozen --no-dev
 
         echo "[3/4] Building ChromaDB..."
-        cp ${self}/products.csv ${self}/food_storage.csv "$WORK/"
-        cp ${self}/unify_food_database.py ${self}/build_spanish_foodkeeper.py "$WORK/"
-        mkdir -p "$WORK/src/testassets/database"
-        cp ${self}/src/testassets/database/foodkeeper-spanish.json "$WORK/src/testassets/database/"
-        cp ${self}/src/testassets/database/foodkeeper.json "$WORK/src/testassets/database/"
-        export PYTHONPATH="$WORK"
-        export LD_LIBRARY_PATH="${ldPath}"
+        export PYTHONPATH="$DATA_DIR"
         uv run python unify_food_database.py
         uv run python build_spanish_foodkeeper.py
-        cp -r "$WORK/chroma_db" "$DATA_DIR/"
 
         if [ ! -f "$DATA_DIR/.env" ]; then
           echo "[4/4] Creating .env template..."
@@ -100,39 +93,26 @@
         fi
 
         echo ""
-        echo "Done! Next:"
-        echo "  1. Edit $DATA_DIR/.env with your ZAI_API_KEY"
-        echo "  2. cp ${key-api}/lib/systemd/system/key-api.service /etc/systemd/system/"
-        echo "  3. systemctl daemon-reload && systemctl enable --now key-api"
+        echo "Done! Edit $DATA_DIR/.env with your ZAI_API_KEY, then:"
+        echo "  cp ${key-api}/lib/systemd/system/key-api.service /etc/systemd/system/"
+        echo "  systemctl daemon-reload && systemctl enable --now key-api"
       '';
 
       build-db = pkgs.writeShellScriptBin "build-db" ''
-        export PATH="${pkgs.lib.makeBinPath ([ pkgs.coreutils python ] ++ runtimeLibs)}"
-        DATA_DIR="''${1:-/var/lib/key-api}"
+        export PATH="${pkgs.lib.makeBinPath ([ pkgs.coreutils python pkgs.uv ] ++ runtimeLibs)}"
+        export LD_LIBRARY_PATH="${ldPath}"
+        DATA_DIR="''${1:-./data}"
         if [ ! -d "$DATA_DIR/.venv" ]; then
           echo "No venv at $DATA_DIR/.venv — run key-setup first"
           exit 1
         fi
 
         echo "Rebuilding ChromaDB..."
-        WORK=$(mktemp -d)
-        trap 'rm -rf "$WORK"' EXIT
-        cp ${self}/products.csv ${self}/food_storage.csv "$WORK/"
-        cp ${self}/unify_food_database.py ${self}/build_spanish_foodkeeper.py "$WORK/"
-        cp -r ${self}/src "$WORK/"
-        mkdir -p "$WORK/src/testassets/database"
-        cp ${self}/src/testassets/database/foodkeeper-spanish.json "$WORK/src/testassets/database/"
-        cp ${self}/src/testassets/database/foodkeeper.json "$WORK/src/testassets/database/"
-
-        cd "$WORK"
-        source "$DATA_DIR/.venv/bin/activate"
-        export PYTHONPATH="$WORK"
-        export LD_LIBRARY_PATH="${ldPath}"
+        cd "$DATA_DIR"
+        rm -rf chroma_db
+        export PYTHONPATH="$DATA_DIR"
         uv run python unify_food_database.py
         uv run python build_spanish_foodkeeper.py
-
-        rm -rf "$DATA_DIR/chroma_db"
-        cp -r "$WORK/chroma_db" "$DATA_DIR/"
         echo "Done: $DATA_DIR/chroma_db/"
       '';
  
