@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Receipt Analyzer</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #0f1117; --surface: #1a1d27; --surface2: #242836;
+  --border: #2e3345; --text: #e4e6ed; --text2: #9499ad;
+  --accent: #6c8cff; --accent2: #4a6aef;
+  --green: #4ade80; --yellow: #facc15; --red: #f87171;
+  --radius: 10px;
+}
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg); color: var(--text);
+  min-height: 100vh; padding: 2rem;
+}
+h1 { font-size: 1.5rem; margin-bottom: 1.5rem; color: var(--text); }
+.upload-zone {
+  border: 2px dashed var(--border); border-radius: var(--radius);
+  padding: 3rem 2rem; text-align: center; cursor: pointer;
+  transition: border-color .2s, background .2s;
+  background: var(--surface);
+}
+.upload-zone:hover, .upload-zone.dragover {
+  border-color: var(--accent); background: var(--surface2);
+}
+.upload-zone p { color: var(--text2); margin-top: .5rem; font-size: .9rem; }
+.upload-zone .icon { font-size: 2.5rem; margin-bottom: .5rem; }
+input[type="file"] { display: none; }
+
+.preview-container {
+  margin-top: 1rem; text-align: center; display: none;
+}
+.preview-container img {
+  max-width: 100%; max-height: 300px; border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+.actions { margin-top: 1rem; display: flex; gap: .75rem; }
+
+button {
+  padding: .6rem 1.5rem; border: none; border-radius: var(--radius);
+  font-size: .9rem; cursor: pointer; font-weight: 500;
+  transition: background .2s;
+}
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: var(--accent2); }
+.btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+.btn-secondary { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+.btn-secondary:hover { background: var(--border); }
+
+.loader {
+  display: none; margin-top: 1.5rem; text-align: center; color: var(--text2);
+}
+.loader.active { display: block; }
+.spinner {
+  width: 32px; height: 32px; border: 3px solid var(--border);
+  border-top-color: var(--accent); border-radius: 50%;
+  animation: spin .8s linear infinite; margin: 0 auto .75rem;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.error-box {
+  margin-top: 1.5rem; padding: 1rem; border-radius: var(--radius);
+  background: rgba(248,113,113,.1); border: 1px solid var(--red);
+  color: var(--red); display: none;
+}
+.error-box.active { display: block; }
+
+.results { margin-top: 1.5rem; display: none; }
+.results.active { display: block; }
+.results-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+.results-header h2 { font-size: 1.2rem; }
+
+.product-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 1rem;
+}
+.product-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 1.25rem;
+}
+.product-card .status-badge {
+  display: inline-block; padding: .15rem .5rem; border-radius: 4px;
+  font-size: .75rem; font-weight: 600; margin-bottom: .75rem;
+}
+.status-badge.success { background: rgba(74,222,128,.15); color: var(--green); }
+.status-badge.error { background: rgba(248,113,113,.15); color: var(--red); }
+
+.product-card .names { margin-bottom: 1rem; }
+.product-card .original { font-weight: 600; font-size: 1rem; margin-bottom: .25rem; }
+.product-card .translated { color: var(--accent); font-size: .9rem; }
+.product-card .spanish { color: var(--text2); font-size: .85rem; font-style: italic; }
+
+.product-card .meta {
+  display: flex; gap: .75rem; margin-bottom: 1rem; flex-wrap: wrap;
+}
+.meta-tag {
+  background: var(--surface2); padding: .25rem .6rem; border-radius: 4px;
+  font-size: .8rem; color: var(--text2);
+}
+
+.product-card section { margin-bottom: .75rem; }
+.product-card section:last-child { margin-bottom: 0; }
+.product-card h4 {
+  font-size: .75rem; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--text2); margin-bottom: .4rem;
+}
+
+.storage-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: .3rem 0; border-bottom: 1px solid var(--border); font-size: .85rem;
+}
+.storage-row:last-child { border-bottom: none; }
+.storage-method { font-weight: 500; text-transform: capitalize; }
+.storage-duration { color: var(--text2); }
+.storage-tips { color: var(--text2); font-size: .8rem; margin-top: .2rem; }
+
+.nutrition-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: .3rem .75rem; font-size: .85rem;
+}
+.nutrition-grid .label { color: var(--text2); }
+.nutrition-grid .value { text-align: right; font-weight: 500; }
+
+.raw-toggle {
+  margin-top: 1.5rem; display: none;
+}
+.raw-toggle.active { display: block; }
+.raw-toggle summary {
+  cursor: pointer; color: var(--text2); font-size: .85rem;
+  padding: .5rem 0;
+}
+.raw-toggle pre {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 1rem; margin-top: .5rem;
+  overflow-x: auto; font-size: .8rem; color: var(--text2);
+  max-height: 400px; overflow-y: auto;
+}
+
+@media (max-width: 500px) {
+  body { padding: 1rem; }
+  .product-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<h1>Receipt Analyzer</h1>
+
+<div class="upload-zone" id="dropZone">
+  <div class="icon">&#128196;</div>
+  <p>Drop receipt image here or click to browse</p>
+  <input type="file" id="fileInput" accept="image/*">
+</div>
+
+<div class="preview-container" id="preview">
+  <img id="previewImg" alt="Receipt preview">
+</div>
+
+<div class="actions" id="actions" style="display:none">
+  <button class="btn-primary" id="analyzeBtn">Analyze Receipt</button>
+  <button class="btn-secondary" id="clearBtn">Clear</button>
+</div>
+
+<div class="loader" id="loader">
+  <div class="spinner"></div>
+  <p>Analyzing receipt...</p>
+</div>
+
+<div class="error-box" id="errorBox"></div>
+
+<div class="results" id="results">
+  <div class="results-header">
+    <h2 id="resultsTitle">Results</h2>
+  </div>
+  <div class="product-grid" id="productGrid"></div>
+</div>
+
+<details class="raw-toggle" id="rawToggle">
+  <summary>Raw JSON Response</summary>
+  <pre id="rawJson"></pre>
+</details>
+
+<script>
+const API_URL = "http://localhost:5003/api/receipt/analyze";
+
+const dropZone = document.getElementById("dropZone");
+const fileInput = document.getElementById("fileInput");
+const preview = document.getElementById("preview");
+const previewImg = document.getElementById("previewImg");
+const actions = document.getElementById("actions");
+const analyzeBtn = document.getElementById("analyzeBtn");
+const clearBtn = document.getElementById("clearBtn");
+const loader = document.getElementById("loader");
+const errorBox = document.getElementById("errorBox");
+const results = document.getElementById("results");
+const resultsTitle = document.getElementById("resultsTitle");
+const productGrid = document.getElementById("productGrid");
+const rawToggle = document.getElementById("rawToggle");
+const rawJson = document.getElementById("rawJson");
+
+let selectedFile = null;
+
+dropZone.addEventListener("click", () => fileInput.click());
+
+dropZone.addEventListener("dragover", e => {
+  e.preventDefault();
+  dropZone.classList.add("dragover");
+});
+dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
+dropZone.addEventListener("drop", e => {
+  e.preventDefault();
+  dropZone.classList.remove("dragover");
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+
+fileInput.addEventListener("change", () => {
+  if (fileInput.files.length) handleFile(fileInput.files[0]);
+});
+
+function handleFile(file) {
+  if (!file.type.startsWith("image/")) return;
+  selectedFile = file;
+  const reader = new FileReader();
+  reader.onload = e => {
+    previewImg.src = e.target.result;
+    preview.style.display = "block";
+    actions.style.display = "flex";
+  };
+  reader.readAsDataURL(file);
+  hideResults();
+}
+
+clearBtn.addEventListener("click", () => {
+  selectedFile = null;
+  fileInput.value = "";
+  preview.style.display = "none";
+  actions.style.display = "none";
+  hideResults();
+});
+
+analyzeBtn.addEventListener("click", async () => {
+  if (!selectedFile) return;
+  analyzeBtn.disabled = true;
+  loader.classList.add("active");
+  errorBox.classList.remove("active");
+  hideResults();
+
+  const form = new FormData();
+  form.append("file", selectedFile);
+
+  try {
+    const res = await fetch(API_URL, { method: "POST", body: form });
+    const data = await res.json();
+    rawJson.textContent = JSON.stringify(data, null, 2);
+    rawToggle.classList.add("active");
+
+    if (!data.success) {
+      showError(data.message || "Analysis failed");
+      return;
+    }
+
+    renderResults(data);
+  } catch (err) {
+    showError("Request failed: " + err.message);
+  } finally {
+    loader.classList.remove("active");
+    analyzeBtn.disabled = false;
+  }
+});
+
+function hideResults() {
+  results.classList.remove("active");
+  rawToggle.classList.remove("active");
+}
+
+function showError(msg) {
+  errorBox.textContent = msg;
+  errorBox.classList.add("active");
+}
+
+function renderResults(data) {
+  productGrid.innerHTML = "";
+  resultsTitle.textContent = `${data.total_items} product${data.total_items !== 1 ? "s" : ""} found`;
+  data.products.forEach(renderProduct);
+  results.classList.add("active");
+}
+
+function renderProduct(p) {
+  const card = document.createElement("div");
+  card.className = "product-card";
+
+  let html = "";
+
+  const badgeClass = p.status === "success" ? "success" : "error";
+  html += `<span class="status-badge ${badgeClass}">${p.status}</span>`;
+
+  html += '<div class="names">';
+  html += `<div class="original">${esc(p.original_name)}</div>`;
+  if (p.normalized_name) html += `<div class="translated">${esc(p.normalized_name)}</div>`;
+  if (p.spanish_name) html += `<div class="spanish">${esc(p.spanish_name)}</div>`;
+  html += "</div>";
+
+  html += '<div class="meta">';
+  if (p.quantity) html += `<span class="meta-tag">Qty: ${esc(p.quantity)}</span>`;
+  if (p.price) html += `<span class="meta-tag">Price: ${esc(p.price)}</span>`;
+  html += "</div>";
+
+  if (p.storage_options && p.storage_options.length) {
+    html += "<section><h4>Storage</h4>";
+    p.storage_options.forEach(s => {
+      html += '<div class="storage-row">';
+      html += `<span class="storage-method">${esc(s.method)}</span>`;
+      if (s.duration_min > 0 || s.duration_max > 0) {
+        html += `<span class="storage-duration">${s.duration_min}–${s.duration_max} days</span>`;
+      } else {
+        html += '<span class="storage-duration">N/A</span>';
+      }
+      html += "</div>";
+      if (s.tips) html += `<div class="storage-tips">${esc(s.tips)}</div>`;
+    });
+    html += "</section>";
+  }
+
+  if (p.nutrition_info && p.nutrition_info.found) {
+    const n = p.nutrition_info;
+    html += "<section><h4>Nutrition (per 100g)</h4><div class='nutrition-grid'>";
+    html += `<span class="label">Calories</span><span class="value">${n.calories ?? "—"} kcal</span>`;
+    html += `<span class="label">Protein</span><span class="value">${n.proteins ?? "—"} g</span>`;
+    html += `<span class="label">Carbs</span><span class="value">${n.carbohydrates ?? "—"} g</span>`;
+    html += `<span class="label">Fat</span><span class="value">${n.fats ?? "—"} g</span>`;
+    html += "</div></section>";
+  }
+
+  if (p.error) {
+    html += `<section style="color:var(--red);font-size:.85rem;">Error: ${esc(p.error)}</section>`;
+  }
+
+  card.innerHTML = html;
+  productGrid.appendChild(card);
+}
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+</script>
+</body>
+</html>

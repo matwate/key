@@ -1,0 +1,2 @@
+curl -X POST "http://localhost:5003/api/receipt/analyze" -F "file=@/home/matwa/apps/key/src/testassets/receipt2.jpeg" | jq
+
