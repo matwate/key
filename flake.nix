@@ -120,6 +120,7 @@
       packages.${system}.default = key-api;
 
       apps.${system} = {
+        default = { type = "app"; program = "${key-api}/bin/key-api"; };
         setup = { type = "app"; program = "${setup}/bin/key-setup"; };
         build-db = { type = "app"; program = "${build-db}/bin/build-db"; };
       };
