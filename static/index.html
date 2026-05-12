@@ -185,7 +185,9 @@ button {
 </details>
 
 <script>
-const API_URL = "http://localhost:5003/api/receipt/analyze";
+const API_URL = window.location.protocol === "file:"
+  ? "http://localhost:5003/api/receipt/analyze"
+  : `${window.location.origin}/api/receipt/analyze`;
 
 const dropZone = document.getElementById("dropZone");
 const fileInput = document.getElementById("fileInput");

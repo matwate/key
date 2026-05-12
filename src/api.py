@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from typing import Any, Optional
 
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -23,6 +23,7 @@ class ReceiptResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     init_db()
+    application.state.processor = ReceiptProcessor()
     yield
 
 
@@ -38,14 +39,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 
-_processor = None
 
-
-def get_processor():
-    global _processor
-    if _processor is None:
-        _processor = ReceiptProcessor()
-    return _processor
 
 
 @app.get("/")
@@ -63,9 +57,9 @@ async def health():
 
 
 @app.post("/api/receipt/analyze", response_model=ReceiptResponse)
-async def analyze_receipt(file: UploadFile = File(...)):
+async def analyze_receipt(request: Request, file: UploadFile = File(...)):
     try:
-        proc = get_processor()
+        proc = request.app.state.processor
 
         with tempfile.NamedTemporaryFile(
             delete=False,

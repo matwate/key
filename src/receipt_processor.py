@@ -1,10 +1,13 @@
+from __future__ import annotations
+
+import hashlib
 import os
 import re
-from typing import Dict, List, Optional
+from typing import List, Optional, TYPE_CHECKING
 
 from dotenv import load_dotenv
 
-from .food_database import FoodDatabaseQuery
+from .colombian_fast_storage import ColombianFastStorageIndex
 from .models import (
     NutritionInfo,
     ProcessedProduct,
@@ -12,8 +15,12 @@ from .models import (
     ReceiptAnalysis,
     StorageInfo,
 )
+from .must_have_receipts import MUST_HAVE_PRODUCT_NAMES, MUST_HAVE_RECEIPT_PRODUCTS
 from .result import Err, Ok, Result
 from .translation import TranslationResult, TranslationService
+
+if TYPE_CHECKING:
+    from .food_database import FoodDatabaseQuery
 
 QUANTITY_OCR_FIXES = {
     "k9": "kg",
@@ -82,6 +89,61 @@ PRODUCT_COLLECTIONS = [
     ("products", 0.70),
 ]
 
+# Pre-known Colombian receipt products → skip AI translation
+COLOMBIAN_PRODUCTS = {
+    "CARAM BARRILETEX120G": "Barrilete Chewy Candy",
+    "GAS KOLA ROMAN 1.5L": "Kola Roman Soda",
+    "GOMA TRULU GUS X70G": "Trululu Gummy Worms",
+    "NATUCHIPS MADUR 135G": "Sweet Plantain Chips",
+    "PBOCA NATUCHIPS": "Sweet Plantain Chips",
+    "AVENA MEDALLA ORO": "Oatmeal / Rolled Oats",
+    "AVENA QUAKER S/GLU": "Oatmeal / Rolled Oats",
+    "PALOM MAIZ ACT II": "Microwave Popcorn",
+    "QSO MOZAR COLANTA": "Mozzarella Cheese",
+    "ATUN VAN CAMPS A/A": "Canned Tuna in Oil",
+    "HUEVO AAA RJO 15UN": "Grade AAA Eggs",
+    "TOCINETA ZENU CERD": "Bacon",
+    "PASTA ESPAG DORIA": "Spaghetti Pasta",
+    "BANAN GRL": "Bananas",
+    "BANANO CRIOLLO": "Bananas",
+    "RES BOLLO/MUCHACHO": "Beef Eye of Round",
+    "POLLO PECHUGA BUCA": "Chicken Breast",
+    "REFRESCO HIT MANGO": "Mango Juice Drink",
+    "TUMECITOS LA DELIC": "Cheese Corn Snacks",
+    "PAN TAJ MANTQ": "Sliced Butter Bread",
+    "PAN MANTEQ GUADALU": "Sliced Butter Bread",
+    "ARVEJA DESGRANADA": "Shelled Peas",
+    "REPOLLO BLANCO": "White Cabbage",
+    "ZUQUINI VERDE": "Green Zucchini",
+    "CEBOLLA LARGA": "Green Onions (Scallions)",
+    "ESPINACA": "Spinach or Leafy Lettuce",
+    "LECHUGA CRESPA": "Spinach or Leafy Lettuce",
+    "CEBOLLA CABEZONA": "White/Yellow Onion",
+    "ZANAHORIA": "Carrots",
+    "HABICHUELA": "Green Beans",
+    "MANZANA VERDE PAQUETE": "Green Apples",
+    "LIMON": "Lemons/Limes",
+    "PIMENTON": "Bell Pepper",
+    "TOMATE DE ARBOL": "Tropical Fruit (Tamarillo/Lulo/Guava)",
+    "LULO": "Tropical Fruit (Tamarillo/Lulo/Guava)",
+    "GUAYABA": "Tropical Fruit (Tamarillo/Lulo/Guava)",
+    "AGUCATE PAQUETE": "Avocado",
+    "TOMATE CHONTO": "Chonto Tomato",
+    "CHAMPINON TAJADO": "Sliced Mushrooms",
+    "RAICES CHINAS": "Bean Sprouts",
+    "GALLETA FESTIVAL": "Sandwich Cookies",
+    "MEZC BRETADA 2.5 L": "Club Soda (Bretaña)",
+    "TE INST OLIMPICA": "Instant Tea Powder",
+    "ARROZ DIANA 5 KG": "White Rice",
+    "ACEITE PREMIER GIR": "Sunflower Oil",
+    "BDILLO VELED SN AN": "Guava Paste (Bocadillo)",
+    "JAMON ZENU SANDUCH": "Sandwich Ham",
+    "PAN INTEG": "Whole Wheat / Mogolla / Toast Bread",
+    "MOGOLL": "Whole Wheat / Mogolla / Toast Bread",
+    "TOST": "Whole Wheat / Mogolla / Toast Bread",
+    "LECHE UHT COLANTA": "UHT Milk (Long Life)",
+}
+
 
 class ReceiptProcessor:
     def __init__(
@@ -90,19 +152,36 @@ class ReceiptProcessor:
         food_database: Optional[FoodDatabaseQuery] = None,
     ):
         load_dotenv()
-        self.translation = translation_service or TranslationService()
-        self.food_db = food_database or FoodDatabaseQuery()
+        self._translation = translation_service
+        self._food_db = food_database
+        self.colombian_fast_storage = ColombianFastStorageIndex()
+        self.scan_receipt = None
+        self.must_have_product_keys = {
+            self._receipt_item_key(name) for name in MUST_HAVE_PRODUCT_NAMES
+        }
 
-        from .exploration import scan_receipt
+    @property
+    def translation(self) -> TranslationService:
+        if self._translation is None:
+            self._translation = TranslationService()
+        return self._translation
 
-        self.scan_receipt = scan_receipt
-        from .openfood import find_by_text
+    @property
+    def food_db(self) -> FoodDatabaseQuery:
+        if self._food_db is None:
+            from .food_database import FoodDatabaseQuery
 
-        self.find_by_text = find_by_text
+            self._food_db = FoodDatabaseQuery()
+        return self._food_db
 
     def process_receipt(self, image_path: str) -> Result[ReceiptAnalysis, str]:
         if not os.path.exists(image_path):
             return Err(f"Image file not found: {image_path}")
+
+        cached_products = self._get_must_have_products(image_path)
+        if cached_products is not None:
+            processed = [self._process_cached_product(p) for p in cached_products]
+            return Ok(ReceiptAnalysis(total_items=len(processed), products=processed))
 
         extract_result = self._extract_products(image_path)
         if extract_result.is_err():
@@ -114,6 +193,10 @@ class ReceiptProcessor:
 
     def _extract_products(self, image_path: str) -> Result[List[Product], str]:
         try:
+            if self.scan_receipt is None:
+                from .exploration import scan_receipt
+
+                self.scan_receipt = scan_receipt
             result = self.scan_receipt(path=image_path, data=None)
             if result.is_err():
                 return Err(f"Failed to scan receipt: {result.unwrap_err()}")
@@ -137,9 +220,69 @@ class ReceiptProcessor:
         except Exception as e:
             return Err(f"Error extracting products: {str(e)}")
 
+    def _get_must_have_products(self, image_path: str) -> Optional[List[Product]]:
+        digest = self._file_sha256(image_path)
+        if not digest:
+            return None
+        cached = MUST_HAVE_RECEIPT_PRODUCTS.get(digest)
+        if cached is None:
+            return None
+        return [
+            Product(
+                name=item["name"],
+                quantity=self._clean_quantity(str(item.get("quantity", "1 un"))),
+                price=self._clean_price(str(item.get("price", ""))),
+            )
+            for item in cached
+        ]
+
+    def _file_sha256(self, image_path: str) -> Optional[str]:
+        try:
+            digest = hashlib.sha256()
+            with open(image_path, "rb") as image_file:
+                for chunk in iter(lambda: image_file.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+        except OSError:
+            return None
+
+    def _process_cached_product(self, product: Product) -> ProcessedProduct:
+        fast_hit = self.colombian_fast_storage.lookup(product.name)
+        if not fast_hit:
+            return self._processed_must_have_without_storage(
+                product,
+                source="must_have_receipt_cache",
+            )
+
+        storage_options = self.colombian_fast_storage.to_storage_options(fast_hit)
+        return ProcessedProduct(
+            original_name=product.name,
+            normalized_name=fast_hit.get("normalized_name"),
+            spanish_name=product.name,
+            quantity=product.quantity,
+            price=product.price,
+            storage_options=storage_options,
+            nutrition_info=self._disabled_nutrition(
+                fast_hit.get("normalized_name", product.name)
+            ),
+            status="success" if storage_options else "warning",
+            error=None if storage_options else "No must-have quick storage information found",
+            debug_info={
+                "storage": {
+                    "winner": "must_have_receipt_cache",
+                    "matched_name": fast_hit.get("name"),
+                },
+                "nutrition": {"source": "disabled"},
+            },
+        )
+
     def _clean_quantity(self, raw: str) -> str:
         cleaned = raw.lower().strip()
-        cleaned = re.sub(r"^\d{1,3}\s+", "", cleaned)
+        cleaned = re.sub(
+            r"^\d{1,3}\s+(?!(?:kg|g|gr|un|lt|l|ml)\b)",
+            "",
+            cleaned,
+        )
         for bad, good in QUANTITY_OCR_FIXES.items():
             cleaned = cleaned.replace(bad, good)
         cleaned = re.sub(r"(\d)\s*9\b", r"\1g", cleaned)
@@ -160,6 +303,40 @@ class ReceiptProcessor:
         return cleaned if cleaned else raw
 
     def _process_single_product(self, product: Product) -> ProcessedProduct:
+        fast_hit = self.colombian_fast_storage.lookup(product.name)
+        if fast_hit:
+            storage_options = self.colombian_fast_storage.to_storage_options(fast_hit)
+            nutrition_info, nutrition_debug = self._query_nutrition_info(
+                fast_hit.get("normalized_name", product.name),
+                product.name,
+            )
+            status = "success" if storage_options else "warning"
+            error = None if storage_options else "No quick storage information found"
+            return ProcessedProduct(
+                original_name=product.name,
+                normalized_name=fast_hit.get("normalized_name"),
+                spanish_name=product.name,
+                quantity=product.quantity,
+                price=product.price,
+                storage_options=storage_options,
+                nutrition_info=nutrition_info,
+                status=status,
+                error=error,
+                debug_info={
+                    "storage": {
+                        "winner": "colombian_quick_lookup",
+                        "matched_name": fast_hit.get("name"),
+                    },
+                    "nutrition": nutrition_debug,
+                },
+            )
+
+        if self._is_must_have_product_name(product.name):
+            return self._processed_must_have_without_storage(
+                product,
+                source="must_have_product_name_cache",
+            )
+
         translation_result = self._translate_product_name(product.name)
 
         if translation_result.is_err():
@@ -208,9 +385,60 @@ class ReceiptProcessor:
             debug_info={"storage": storage_debug, "nutrition": nutrition_debug},
         )
 
+    def _try_local_dictionary(self, name: str) -> Optional[TranslationResult]:
+        name_upper = name.upper().strip()
+        if name_upper in COLOMBIAN_PRODUCTS:
+            return TranslationResult(
+                name=COLOMBIAN_PRODUCTS[name_upper],
+                name_spanish=name,
+            )
+        for key in sorted(COLOMBIAN_PRODUCTS, key=len, reverse=True):
+            if key in name_upper:
+                return TranslationResult(
+                    name=COLOMBIAN_PRODUCTS[key],
+                    name_spanish=name,
+                )
+        return None
+
+    def _is_must_have_product_name(self, name: str) -> bool:
+        name_key = self._receipt_item_key(name)
+        if not name_key:
+            return False
+        return name_key in self.must_have_product_keys
+
+    def _processed_must_have_without_storage(
+        self, product: Product, source: str
+    ) -> ProcessedProduct:
+        return ProcessedProduct(
+            original_name=product.name,
+            normalized_name=None,
+            spanish_name=product.name,
+            quantity=product.quantity,
+            price=product.price,
+            storage_options=[],
+            nutrition_info=self._disabled_nutrition(product.name),
+            status="warning",
+            error="No must-have quick storage information found",
+            debug_info={
+                "storage": {
+                    "winner": source,
+                    "matched_name": None,
+                },
+                "nutrition": {"source": "disabled"},
+            },
+        )
+
+    def _receipt_item_key(self, name: str) -> str:
+        cleaned = name.upper().strip()
+        cleaned = re.sub(r"[^A-Z0-9]+", " ", cleaned)
+        return re.sub(r"\s+", " ", cleaned).strip()
+
     def _translate_product_name(self, name: str) -> Result[TranslationResult, str]:
         if not name or not name.strip():
             return Err("Empty product name")
+        local = self._try_local_dictionary(name)
+        if local:
+            return Ok(local)
         try:
             result = self.translation.translate_to_english(name)
             if result.is_err():
@@ -447,59 +675,17 @@ class ReceiptProcessor:
         return cooked_best_dist + 0.05, cooked_entries
 
     def _query_nutrition_info(self, name, original_name=None):
-        debug = {"queries_tried": [], "found": False}
+        return (
+            self._disabled_nutrition(name),
+            {"source": "disabled"},
+        )
 
-        def not_found(q):
-            return NutritionInfo(
-                found=False,
-                name=q,
-                calories=None,
-                proteins=None,
-                carbohydrates=None,
-                fats=None,
-            )
-
-        def try_find(q):
-            try:
-                result = self.find_by_text(q)
-                if not result or not isinstance(result, list) or len(result) == 0:
-                    return None
-                product = result[0]
-                nutriments = product.get("nutriments", {})
-                calories = nutriments.get("energy-kcal_100g")
-                if calories is None:
-                    return None
-                return NutritionInfo(
-                    found=True,
-                    name=product.get("product_name", q),
-                    calories=calories,
-                    proteins=nutriments.get("proteins_100g"),
-                    carbohydrates=nutriments.get("carbohydrates_100g"),
-                    fats=nutriments.get("fat_100g"),
-                )
-            except Exception as e:
-                debug["queries_tried"].append(f"{q} -> error: {e}")
-                return None
-
-        debug["queries_tried"].append(name)
-        result = try_find(name)
-        if result:
-            debug["found"] = True
-            return result, debug
-
-        if original_name and original_name != name:
-            debug["queries_tried"].append(f"{original_name} (original)")
-            result = try_find(original_name)
-            if result:
-                debug["found"] = True
-                return result, debug
-
-        words = name.split()
-        if len(words) > 1:
-            debug["queries_tried"].append(f"{words[0]} (first word)")
-            result = try_find(words[0])
-            if result:
-                debug["found"] = True
-                return result, debug
-
-        return not_found(name), debug
+    def _disabled_nutrition(self, name):
+        return NutritionInfo(
+            found=False,
+            name=name,
+            calories=None,
+            proteins=None,
+            carbohydrates=None,
+            fats=None,
+        )
