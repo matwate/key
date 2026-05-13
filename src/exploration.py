@@ -1,7 +1,9 @@
 import base64
 import json
+import logging
 import mimetypes
 import os
+import re
 import sys
 from typing import Any, Optional
 
@@ -9,6 +11,8 @@ import zai
 from dotenv import load_dotenv
 
 from .result import Err, Ok, Result
+
+logger = logging.getLogger(__name__)
 
 if not load_dotenv():
     print("Error: .env file not found or could not be loaded", file=sys.stderr)
@@ -93,19 +97,67 @@ Return the products in the following JSON format:
         response_format={"type": "json_object"},
     )
 
-    try:
-        content = result.choices[0].message.content
+    raw_content = result.choices[0].message.content
+    if not raw_content or not raw_content.strip():
+        logger.error("Vision model returned empty content")
+        return Err("Vision model returned empty response — receipt may be unreadable")
 
-        start_idx = content.find("{")
-        end_idx = content.rfind("}")
+    parsed_result = _extract_json(raw_content)
+    if parsed_result is not None:
+        return Ok(parsed_result)
 
-        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-            content = content[start_idx : end_idx + 1]
+    logger.error("Could not extract JSON from vision response: %s", raw_content[:500])
+    return Err("Couldn't decode receipt — model returned unparseable content")
 
-        parsed_result = json.loads(content)
-    except json.decoder.JSONDecodeError as e:
-        print(f"JSON Decode Error: {e}")
-        print(f"Content: {result.choices[0].message.content}")
-        return Err("Couldn't decode this")
 
-    return Ok(parsed_result)
+def _extract_json(raw: str) -> Optional[dict]:
+    """Robust JSON extraction from LLM output with multiple fallback strategies."""
+    strategies = [
+        _extract_json_fenced,
+        _extract_json_brace,
+        _extract_json_regex,
+    ]
+    for strategy in strategies:
+        try:
+            result = strategy(raw)
+            if isinstance(result, dict):
+                return result
+        except (json.JSONDecodeError, ValueError, AttributeError):
+            continue
+    return None
+
+
+def _extract_json_fenced(raw: str) -> dict:
+    """Strip ```json / ``` fences, then try direct parse."""
+    cleaned = re.sub(r"^```(?:json)?\s*\n?", "", raw.strip())
+    cleaned = re.sub(r"\n?\s*```\s*$", "", cleaned)
+    return json.loads(cleaned)
+
+
+def _extract_json_brace(raw: str) -> dict:
+    """Find outermost { ... }, capture everything between."""
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("No braces found")
+    block = raw[start : end + 1]
+    return json.loads(block)
+
+
+def _extract_json_regex(raw: str) -> dict:
+    """Regex-based extraction: match balanced braces near the start."""
+    stripped = raw.strip()
+    # Find first { and find matching }
+    depth = 0
+    start = stripped.find("{")
+    if start == -1:
+        raise ValueError("No opening brace")
+    for i, ch in enumerate(stripped[start:], start=start):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                block = stripped[start : i + 1]
+                return json.loads(block)
+    raise ValueError("Unbalanced braces")

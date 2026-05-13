@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import os
 import re
@@ -159,6 +160,7 @@ class ReceiptProcessor:
         self.must_have_product_keys = {
             self._receipt_item_key(name) for name in MUST_HAVE_PRODUCT_NAMES
         }
+        self._translation_cache: dict[str, Result[TranslationResult, str]] = {}
 
     @property
     def translation(self) -> TranslationService:
@@ -188,7 +190,11 @@ class ReceiptProcessor:
             return Err(f"Failed to extract products: {extract_result.unwrap_err()}")
 
         products = extract_result.unwrap()
-        processed = [self._process_single_product(p) for p in products]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [
+                executor.submit(self._process_single_product, p) for p in products
+            ]
+            processed = [f.result() for f in futures]
         return Ok(ReceiptAnalysis(total_items=len(processed), products=processed))
 
     def _extract_products(self, image_path: str) -> Result[List[Product], str]:
@@ -439,16 +445,25 @@ class ReceiptProcessor:
         local = self._try_local_dictionary(name)
         if local:
             return Ok(local)
+        cached = self._translation_cache.get(name)
+        if cached is not None:
+            return cached
         try:
             result = self.translation.translate_to_english(name)
             if result.is_err():
-                return Ok(TranslationResult(name=name))
-            translation = result.unwrap()
-            if len(translation.name) < 3:
-                return Ok(TranslationResult(name=name))
-            return result
+                cached = Ok(TranslationResult(name=name))
+            else:
+                translation = result.unwrap()
+                if len(translation.name) < 3:
+                    cached = Ok(TranslationResult(name=name))
+                else:
+                    cached = result
+            self._translation_cache[name] = cached
+            return cached
         except Exception:
-            return Ok(TranslationResult(name=name))
+            cached = Ok(TranslationResult(name=name))
+            self._translation_cache[name] = cached
+            return cached
 
     def _query_storage_info(self, name, spanish_name=None, packaging_hint=None):
         debug = {"queries_tried": [], "candidates": [], "winner": None}
