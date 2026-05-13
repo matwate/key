@@ -4,7 +4,6 @@ import logging
 import mimetypes
 import os
 import re
-import sys
 from typing import Any, Optional
 
 import zai
@@ -14,14 +13,11 @@ from .result import Err, Ok, Result
 
 logger = logging.getLogger(__name__)
 
-if not load_dotenv():
-    print("Error: .env file not found or could not be loaded", file=sys.stderr)
-    sys.exit(1)
+load_dotenv()
 
 api_key = os.getenv("ZAI_API_KEY")
 if not api_key:
-    print("Error: ZAI_API_KEY environment variable not set", file=sys.stderr)
-    sys.exit(1)
+    raise RuntimeError("ZAI_API_KEY environment variable not set")
 
 client = zai.ZaiClient(api_key=api_key, base_url="https://api.z.ai/api/coding/paas/v4")
 
